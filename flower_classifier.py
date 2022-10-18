@@ -99,15 +99,19 @@ def train_and_export_flower_model():
                 nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, padding=1, stride=1),
                 nn.MaxPool2d(2),
                 nn.ReLU(),
-                nn.Dropout(0.5),
 
                 nn.Flatten(),
+                nn.Dropout(0.5),
                 nn.Linear(5*5*128, 128),
                 nn.ReLU(),
                 nn.Dropout(0.2),
                 nn.Linear(128, 5),
                 nn.Softmax()
             )
+    for layer in model_flowers:
+        if isinstance(layer, nn.Conv2d) or isinstance(layer, nn.Linear):
+            nn.init.kaiming_uniform_(layer.weight)
+            nn.init.constant_(layer.bias, 0)
     print(model_flowers)
 
     ######################
@@ -125,7 +129,10 @@ def train_and_export_flower_model():
 
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model_flowers.parameters(), lr=1e-3)
-
+    lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer,
+                 mode='min', factor=0.1, patience=10, threshold=1e-4,
+                 verbose=True)
+    
     ###########################
     # get optimal learning rate
     ###########################
@@ -173,47 +180,44 @@ def train_and_export_flower_model():
     accuracy_list_train = []
     accuracy_list_valid = []
 
-    for lr, epochs in [(1e-3, 120),
-                       (5e-4, 30),
-                       (1e-4, 30),
-                       (5e-5, 30),
-                       (1e-5, 30)]:
+    epochs = 400
 
-        print("learning rate:", lr)
-        optimizer.param_groups[0]['lr'] = lr
+    for epoch in range(epochs):
 
-        for epoch in range(epochs//30):
-            # training set
-            epoch_losses = []
-            epoch_correct = 0
-            model_flowers.train()
-            for x,y in train_loader:
-                x,y = x.to(cuda), y.to(cuda)
-                optimizer.zero_grad()
-                z = model_flowers(x)
-                loss = criterion(z,y)
+        # training set
+        epoch_losses = []
+        epoch_correct = 0
+        model_flowers.train()
+        
+        for x,y in train_loader:
+            x,y = x.to(cuda), y.to(cuda)
+            z = model_flowers(x)
+            loss = criterion(z,y)
 
-                epoch_correct += (torch.argmax(z, 1) == torch.argmax(y, 1)).sum().item()
-                epoch_losses.append(loss.data.item())
-                loss.backward()
-                optimizer.step()
+            epoch_correct += (torch.argmax(z, 1) == torch.argmax(y, 1)).sum().item()
+            epoch_losses.append(loss.data.item())
 
-            loss_list_train.append(torch.mean(torch.tensor(epoch_losses)).item())
-            accuracy_list_train.append(epoch_correct / len(train_loader.dataset))
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
 
-            # validation set
-            epoch_correct = 0
-            model_flowers.eval()
-            for x, y in valid_loader:
-                x,y = x.to(cuda), y.to(cuda)
-                z = model_flowers(x)
-                epoch_correct += (torch.argmax(z, 1) == torch.argmax(y, 1)).sum().item()
+        loss_list_train.append(torch.mean(torch.tensor(epoch_losses)).item())
+        accuracy_list_train.append(epoch_correct / len(train_loader.dataset))
 
-            accuracy_list_valid.append(epoch_correct / len(valid_loader.dataset))
+        # validation set
+        epoch_correct = 0
+        model_flowers.eval()
+        for x, y in valid_loader:
+            x,y = x.to(cuda), y.to(cuda)
+            z = model_flowers(x)
+            epoch_correct += (torch.argmax(z, 1) == torch.argmax(y, 1)).sum().item()
 
-            print("epoch {}, loss: {:.5f}, accuracy: {:.5f}, val_accuracy: {:.5f}".format(
-                epoch+1, loss_list_train[-1], accuracy_list_train[-1], accuracy_list_valid[-1]))
+        accuracy_list_valid.append(epoch_correct / len(valid_loader.dataset))
 
+        lr_scheduler.step(loss_list_train[-1])
+
+        print("epoch {}, loss: {:.5f}, accuracy: {:.5f}, val_accuracy: {:.5f}".format(
+            epoch+1, loss_list_train[-1], accuracy_list_train[-1], accuracy_list_valid[-1]))
     print("training done")
 
     #############
